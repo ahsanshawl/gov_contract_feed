@@ -10,6 +10,7 @@ def _rdate(days_ago: int) -> str:
     return (datetime.now() - timedelta(days=days_ago)).strftime("%Y-%m-%d")
 
 
+
 MOCK_SAM = [
     {
         "id": "sam-mock-001", "source": "SAM.gov", "source_type": "contract",
