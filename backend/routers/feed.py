@@ -77,8 +77,12 @@ async def get_feed(
             source_counts[name] = 0
             has_more_flags.append(False)
 
-    # AI rank + summarize the current page's items
-    ranked = await ai_ranker.rank_and_summarize(all_items, profile)
+    # AI rank + summarize — wrapped so a bad key never takes down the feed
+    try:
+        ranked = await ai_ranker.rank_and_summarize(all_items, profile)
+    except Exception as e:
+        print(f"[Feed] AI ranker raised unexpectedly: {type(e).__name__}: {e}")
+        ranked = ai_ranker._keyword_rank(all_items, profile)
 
     # Feed has more if ANY source still has more pages
     has_more = any(has_more_flags)

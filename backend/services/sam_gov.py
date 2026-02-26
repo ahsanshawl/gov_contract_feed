@@ -2,6 +2,7 @@ import httpx
 import os
 from datetime import datetime, timedelta
 
+# Per GSA official docs: https://open.gsa.gov/api/get-opportunities-public-api/
 SAM_BASE = "https://api.sam.gov/opportunities/v2/search"
 
 
@@ -53,7 +54,7 @@ MOCK_SAM = [
     {
         "id": "sam-mock-006", "source": "SAM.gov", "source_type": "contract",
         "title": "Hypersonic Glide Vehicle Thermal Protection Materials R&D",
-        "description": "AFRL Materials and Manufacturing Directorate solicits proposals for advanced ultra-high temperature ceramic composites capable of sustained operation above Mach 15. Research shall address oxidation resistance, structural integrity under thermal shock, and manufacturability at scale.",
+        "description": "AFRL Materials and Manufacturing Directorate solicits proposals for advanced ultra-high temperature ceramic composites capable of sustained operation above Mach 15.",
         "agency": "AIR FORCE RESEARCH LABORATORY", "posted_date": _rdate(4), "deadline": _rdate(-25),
         "naics": "541715", "set_aside": "Small Business", "contract_type": "BAA",
         "url": "https://sam.gov", "award_amount": None, "is_mock": True,
@@ -79,63 +80,101 @@ MOCK_SAM = [
 
 async def fetch_opportunities(keywords: str = "", limit: int = 15, page: int = 1) -> dict:
     api_key = os.getenv("SAM_API_KEY", "")
-    # if not api_key:
-    #     mock = _mock_opportunities(keywords, limit, page)
-    #     return {"items": mock, "total_on_page": len(mock), "has_more": page < 5}
+    if not api_key:
+        mock = _mock_opportunities(keywords, limit, page)
+        return {"items": mock, "total_on_page": len(mock), "has_more": page < 5}
 
     posted_from = (datetime.now() - timedelta(days=90)).strftime("%m/%d/%Y")
     posted_to = datetime.now().strftime("%m/%d/%Y")
+
+    # SAM.gov uses 0-based offset
     offset = (page - 1) * min(limit, 25)
 
+    # IMPORTANT: SAM.gov v2 has NO full-text keyword search param.
+    # The `title` param does a "title contains" search but is very restrictive
+    # — e.g. "artificial intelligence" won't match "AI" or "machine learning".
+    # Strategy: fetch recent solicitations broadly (by date + ptype),
+    # then let the AI ranker score relevance. On page 1 we try a title hint
+    # for the first keyword; on later pages we fetch broadly to surface variety.
     params = {
         "api_key": api_key,
         "postedFrom": posted_from,
         "postedTo": posted_to,
         "limit": min(limit, 25),
         "offset": offset,
+        # o=Solicitation, r=Sources Sought, p=Pre-solicitation, k=Combined Synopsis
+        "ptype": "o,r,p,k",
     }
-    if keywords:
-        params["q"] = keywords.split(",")[0].strip()  # SAM takes single keyword
+
+    # Only apply title filter on page 1 with the first keyword as a hint.
+    # Subsequent pages fetch broadly so scroll surfaces different content.
+    if keywords and page == 1:
+        first_kw = keywords.split(",")[0].strip()
+        if first_kw and len(first_kw) > 3:
+            params["title"] = first_kw
 
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=20) as client:
             resp = await client.get(SAM_BASE, params=params)
+
             if resp.status_code == 429:
+                print("[SAM.gov] Rate limited — using mock data")
                 mock = _mock_opportunities(keywords, limit, page)
                 return {"items": mock, "total_on_page": len(mock), "has_more": False}
+
+            if resp.status_code == 403:
+                print(f"[SAM.gov] 403 Forbidden — check your API key. Body: {resp.text[:200]}")
+                mock = _mock_opportunities(keywords, limit, page)
+                return {"items": mock, "total_on_page": len(mock), "has_more": False}
+
             resp.raise_for_status()
             data = resp.json()
             items_raw = data.get("opportunitiesData", [])
-            total_records = data.get("totalRecords", 0)
+            total_records = int(data.get("totalRecords", 0))
             has_more = (offset + limit) < total_records
 
+            # If title-filtered page 1 returned nothing, retry without title filter
+            if not items_raw and "title" in params:
+                del params["title"]
+                resp2 = await client.get(SAM_BASE, params=params)
+                if resp2.status_code == 200:
+                    data = resp2.json()
+                    items_raw = data.get("opportunitiesData", [])
+                    total_records = int(data.get("totalRecords", 0))
+                    has_more = (offset + limit) < total_records
+
             if not items_raw:
+                print("[SAM.gov] No results from live API — using mock data")
                 mock = _mock_opportunities(keywords, limit, page)
                 return {"items": mock, "total_on_page": len(mock), "has_more": False}
 
             items = [_parse(o) for o in items_raw]
+            print(f"[SAM.gov] Fetched {len(items)} live opportunities (total available: {total_records})")
             return {"items": items, "total_on_page": len(items), "has_more": has_more}
 
     except Exception as e:
-        print(f"[SAM.gov] {e} — using mock data")
+        print(f"[SAM.gov] {type(e).__name__}: {str(e)[:120]} — using mock data")
         mock = _mock_opportunities(keywords, limit, page)
         return {"items": mock, "total_on_page": len(mock), "has_more": page < 5}
 
 
 def _parse(o: dict) -> dict:
+    notice_id = o.get("noticeId", "")
+    # GSA docs spell it "reponseDeadLine" (their typo) — handle both spellings
+    deadline = o.get("reponseDeadLine") or o.get("responseDeadLine", "")
     return {
-        "id": f"sam-{o.get('noticeId', '')}",
+        "id": f"sam-{notice_id}",
         "source": "SAM.gov",
         "source_type": "contract",
         "title": o.get("title", "Untitled Opportunity"),
         "description": o.get("description", ""),
         "agency": o.get("fullParentPathName", o.get("organizationName", "")),
         "posted_date": o.get("postedDate", ""),
-        "deadline": o.get("responseDeadLine", ""),
+        "deadline": deadline,
         "naics": o.get("naicsCode", ""),
-        "set_aside": o.get("typeOfSetAside", ""),
+        "set_aside": o.get("typeOfSetAside", o.get("setAside", "")),
         "contract_type": o.get("type", ""),
-        "url": f"https://sam.gov/opp/{o.get('noticeId', '')}/view",
+        "url": f"https://sam.gov/opp/{notice_id}/view",
         "award_amount": None,
         "is_mock": False,
     }
@@ -152,7 +191,6 @@ def _mock_opportunities(keywords: str, limit: int, page: int = 1) -> list[dict]:
             scored.append((score, item))
         scored.sort(key=lambda x: x[0], reverse=True)
         items = [i for _, i in scored]
-    # Cycle through mock data for infinite scroll simulation
     start = ((page - 1) * limit) % len(items)
     rotated = items[start:] + items[:start]
     return rotated[:limit]

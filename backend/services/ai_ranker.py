@@ -5,11 +5,13 @@ import re
 # Module-level key store — survives across requests in the same process
 _openai_key: str = ""
 
+
 def set_api_key(key: str):
     global _openai_key
     if key:
         _openai_key = key
         os.environ["OPENAI_API_KEY"] = key
+
 
 def get_openai_client():
     try:
@@ -23,10 +25,14 @@ def get_openai_client():
 
 
 async def rank_and_summarize(items: list[dict], user_profile: dict) -> list[dict]:
-    """Use OpenAI to rank items by relevance and generate summaries."""
+    """Use OpenAI to rank items by relevance and generate summaries.
+    Always falls back to keyword ranking — never raises, never crashes the feed.
+    """
+    if not items:
+        return items
+
     oai = get_openai_client()
-    if not oai or not items:
-        # Fallback: keyword-score ranking without AI
+    if not oai:
         return _keyword_rank(items, user_profile)
 
     interests = user_profile.get("keywords", "")
@@ -64,7 +70,6 @@ Items:
             max_tokens=2500,
         )
         raw = response.choices[0].message.content.strip()
-        # Strip markdown fences
         raw = re.sub(r"^```[a-z]*\n?", "", raw)
         raw = re.sub(r"\n?```$", "", raw)
         rankings = json.loads(raw.strip())
@@ -79,12 +84,26 @@ Items:
         return items
 
     except Exception as e:
-        print(f"[AI Ranker] {e} — falling back to keyword rank")
+        # Catch everything including RateLimitError, AuthenticationError,
+        # APIConnectionError, JSONDecodeError — never crash the feed request
+        err_type = type(e).__name__
+        err_msg = str(e)[:120]
+
+        if "insufficient_quota" in err_msg or "RateLimit" in err_type:
+            print(f"[AI Ranker] OpenAI quota exceeded — falling back to keyword ranking. Add credits at platform.openai.com")
+        elif "AuthenticationError" in err_type or "invalid_api_key" in err_msg:
+            print(f"[AI Ranker] OpenAI key invalid — falling back to keyword ranking")
+            # Clear the bad key so we stop trying
+            global _openai_key
+            _openai_key = ""
+        else:
+            print(f"[AI Ranker] {err_type}: {err_msg} — falling back to keyword ranking")
+
         return _keyword_rank(items, user_profile)
 
 
 def _keyword_rank(items: list[dict], profile: dict) -> list[dict]:
-    """Simple keyword-based relevance scoring as fallback."""
+    """Keyword-based relevance scoring used when OpenAI is unavailable."""
     keywords = profile.get("keywords", "").lower()
     words = [w.strip() for w in re.split(r"[,\s]+", keywords) if len(w.strip()) > 2]
 
@@ -94,7 +113,8 @@ def _keyword_rank(items: list[dict], profile: dict) -> list[dict]:
             item.get("description", ""),
             item.get("agency", ""),
         ]).lower()
-        score = sum(3 if w in item.get("title", "").lower() else 1 for w in words if w in text)
+        title_text = item.get("title", "").lower()
+        score = sum(3 if w in title_text else 1 for w in words if w in text)
         item["relevance_score"] = min(95, 30 + score * 8)
         item["ai_summary"] = ""
 
@@ -125,7 +145,6 @@ Return ONLY JSON (no markdown):
 }}"""
 
     try:
-        from openai import AsyncOpenAI
         response = await oai.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
@@ -137,5 +156,5 @@ Return ONLY JSON (no markdown):
         raw = re.sub(r"\n?```$", "", raw)
         return json.loads(raw.strip())
     except Exception as e:
-        print(f"[AI Profile] {e}")
+        print(f"[AI Profile] {type(e).__name__}: {str(e)[:120]}")
         return {"keywords": raw_input, "org_type": "", "focus": raw_input[:100], "agencies": []}
