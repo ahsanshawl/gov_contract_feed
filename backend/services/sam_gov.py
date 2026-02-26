@@ -79,9 +79,9 @@ MOCK_SAM = [
 
 async def fetch_opportunities(keywords: str = "", limit: int = 15, page: int = 1) -> dict:
     api_key = os.getenv("SAM_API_KEY", "")
-    if not api_key:
-        mock = _mock_opportunities(keywords, limit, page)
-        return {"items": mock, "total_on_page": len(mock), "has_more": page < 5}
+    # if not api_key:
+    #     mock = _mock_opportunities(keywords, limit, page)
+    #     return {"items": mock, "total_on_page": len(mock), "has_more": page < 5}
 
     posted_from = (datetime.now() - timedelta(days=90)).strftime("%m/%d/%Y")
     posted_to = datetime.now().strftime("%m/%d/%Y")
