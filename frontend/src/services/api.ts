@@ -40,12 +40,12 @@ export async function fetchFeed(
   userId = "default",
   sources = "sam,usaspending,grants",
   limit = 15,
-  offset = 0,
+  page = 1,
   openaiKey = ""
 ): Promise<FeedResponse> {
   const keyParam = openaiKey ? `&openai_key=${encodeURIComponent(openaiKey)}` : "";
   const res = await fetch(
-    `${API_BASE}/api/feed/?user_id=${userId}&sources=${sources}&limit=${limit}&offset=${offset}${keyParam}`
+    `${API_BASE}/api/feed/?user_id=${userId}&sources=${sources}&limit=${limit}&page=${page}${keyParam}`
   );
   if (!res.ok) throw new Error(`Feed error: ${res.status}`);
   return res.json();

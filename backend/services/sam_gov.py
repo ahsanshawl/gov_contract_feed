@@ -77,37 +77,49 @@ MOCK_SAM = [
 ]
 
 
-async def fetch_opportunities(keywords: str = "", limit: int = 20) -> list[dict]:
+async def fetch_opportunities(keywords: str = "", limit: int = 15, page: int = 1) -> dict:
     api_key = os.getenv("SAM_API_KEY", "")
     if not api_key:
-        return _mock_opportunities(keywords, limit)
+        mock = _mock_opportunities(keywords, limit, page)
+        return {"items": mock, "total_on_page": len(mock), "has_more": page < 5}
 
-    posted_from = (datetime.now() - timedelta(days=30)).strftime("%m/%d/%Y")
+    posted_from = (datetime.now() - timedelta(days=90)).strftime("%m/%d/%Y")
     posted_to = datetime.now().strftime("%m/%d/%Y")
+    offset = (page - 1) * min(limit, 25)
+
     params = {
         "api_key": api_key,
         "postedFrom": posted_from,
         "postedTo": posted_to,
         "limit": min(limit, 25),
-        "offset": 0,
+        "offset": offset,
     }
     if keywords:
-        params["q"] = keywords
+        params["q"] = keywords.split(",")[0].strip()  # SAM takes single keyword
 
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(SAM_BASE, params=params)
             if resp.status_code == 429:
-                return _mock_opportunities(keywords, limit)
+                mock = _mock_opportunities(keywords, limit, page)
+                return {"items": mock, "total_on_page": len(mock), "has_more": False}
             resp.raise_for_status()
             data = resp.json()
-            items = data.get("opportunitiesData", [])
-            if not items:
-                return _mock_opportunities(keywords, limit)
-            return [_parse(o) for o in items]
+            items_raw = data.get("opportunitiesData", [])
+            total_records = data.get("totalRecords", 0)
+            has_more = (offset + limit) < total_records
+
+            if not items_raw:
+                mock = _mock_opportunities(keywords, limit, page)
+                return {"items": mock, "total_on_page": len(mock), "has_more": False}
+
+            items = [_parse(o) for o in items_raw]
+            return {"items": items, "total_on_page": len(items), "has_more": has_more}
+
     except Exception as e:
         print(f"[SAM.gov] {e} — using mock data")
-        return _mock_opportunities(keywords, limit)
+        mock = _mock_opportunities(keywords, limit, page)
+        return {"items": mock, "total_on_page": len(mock), "has_more": page < 5}
 
 
 def _parse(o: dict) -> dict:
@@ -129,7 +141,7 @@ def _parse(o: dict) -> dict:
     }
 
 
-def _mock_opportunities(keywords: str, limit: int) -> list[dict]:
+def _mock_opportunities(keywords: str, limit: int, page: int = 1) -> list[dict]:
     items = MOCK_SAM.copy()
     if keywords:
         kw = keywords.lower()
@@ -140,4 +152,7 @@ def _mock_opportunities(keywords: str, limit: int) -> list[dict]:
             scored.append((score, item))
         scored.sort(key=lambda x: x[0], reverse=True)
         items = [i for _, i in scored]
-    return items[:limit]
+    # Cycle through mock data for infinite scroll simulation
+    start = ((page - 1) * limit) % len(items)
+    rotated = items[start:] + items[:start]
+    return rotated[:limit]

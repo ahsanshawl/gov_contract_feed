@@ -69,52 +69,85 @@ MOCK_AWARDS = [
 ]
 
 
-async def fetch_awards(keywords: str = "", limit: int = 20) -> list[dict]:
+async def fetch_awards(keywords: str = "", limit: int = 15, page: int = 1) -> dict:
     end_date = datetime.now().strftime("%Y-%m-%d")
-    start_date = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+    start_date = (datetime.now() - timedelta(days=180)).strftime("%Y-%m-%d")
 
     payload = {
         "filters": {
             "time_period": [{"start_date": start_date, "end_date": end_date}],
-            "award_type_codes": ["A", "B", "C", "D"],
+            "award_type_codes": ["A", "B", "C", "D"],  # procurement contracts only
         },
-        "fields": ["Award ID", "Recipient Name", "Award Amount", "Awarding Agency",
-                   "Award Type", "Description", "Period of Performance Start Date",
-                   "Period of Performance Current End Date", "generated_internal_id"],
-        "page": 1,
+        "fields": [
+            "Award ID",
+            "Recipient Name",
+            "Award Amount",
+            "Awarding Agency Name",
+            "Awarding Sub Agency Name",
+            "Award Type",
+            "Period of Performance Start Date",
+            "Period of Performance Current End Date",
+            "generated_internal_id",
+            "Description",
+            "NAICS Code",
+            "NAICS Description",
+        ],
+        "page": page,
         "limit": min(limit, 25),
         "sort": "Award Amount",
         "order": "desc",
+        "subawards": False,
     }
+
+    # USASpending keyword filter must be a list
     if keywords:
-        payload["filters"]["keyword"] = keywords
+        kw_list = [k.strip() for k in keywords.split(",") if k.strip()]
+        payload["filters"]["keywords"] = kw_list
 
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with httpx.AsyncClient(timeout=25) as client:
             resp = await client.post(USA_SPENDING_BASE, json=payload)
             resp.raise_for_status()
             data = resp.json()
             results = data.get("results", [])
+            total_pages = data.get("page_metadata", {}).get("last_page", 1)
+            has_more = page < total_pages
+
             if not results:
-                return _mock_awards(keywords, limit)
-            return [_parse(r) for r in results]
+                mock = _mock_awards(keywords, limit)
+                return {"items": mock, "total_on_page": len(mock), "has_more": False}
+
+            items = [_parse(r) for r in results]
+            return {"items": items, "total_on_page": len(items), "has_more": has_more}
+
     except Exception as e:
         print(f"[USASpending] {e} — using mock data")
-        return _mock_awards(keywords, limit)
+        mock = _mock_awards(keywords, limit)
+        return {"items": mock, "total_on_page": len(mock), "has_more": False}
 
 
 def _parse(r: dict) -> dict:
     award_id = r.get("generated_internal_id", "")
+    agency = r.get("Awarding Agency Name", "")
+    sub_agency = r.get("Awarding Sub Agency Name", "")
+    agency_display = sub_agency if sub_agency and sub_agency != agency else agency
+
+    # Build a useful description if the API returns one, otherwise construct from fields
+    desc = r.get("Description") or ""
+    naics_desc = r.get("NAICS Description", "")
+    if not desc and naics_desc:
+        desc = f"Contract in {naics_desc}."
+
     return {
-        "id": f"award-{r.get('Award ID', '')}",
+        "id": f"award-{r.get('Award ID', award_id)}",
         "source": "USASpending.gov",
         "source_type": "award",
-        "title": f"Award to {r.get('Recipient Name', 'Unknown')}",
-        "description": r.get("Description", ""),
-        "agency": r.get("Awarding Agency", ""),
+        "title": f"Award to {r.get('Recipient Name', 'Unknown Recipient')}",
+        "description": desc,
+        "agency": agency_display,
         "posted_date": r.get("Period of Performance Start Date", ""),
         "deadline": r.get("Period of Performance Current End Date", ""),
-        "naics": "",
+        "naics": r.get("NAICS Code", ""),
         "set_aside": "",
         "contract_type": r.get("Award Type", ""),
         "url": f"https://www.usaspending.gov/award/{award_id}",
@@ -124,7 +157,7 @@ def _parse(r: dict) -> dict:
     }
 
 
-def _mock_awards(keywords: str, limit: int) -> list[dict]:
+def _mock_awards(keywords: str, limit: int, page: int = 1) -> list[dict]:
     items = MOCK_AWARDS.copy()
     if keywords:
         kw = keywords.lower()
@@ -135,4 +168,6 @@ def _mock_awards(keywords: str, limit: int) -> list[dict]:
             scored.append((score, item))
         scored.sort(key=lambda x: x[0], reverse=True)
         items = [i for _, i in scored]
-    return items[:limit]
+    start = ((page - 1) * limit) % len(items)
+    rotated = items[start:] + items[:start]
+    return rotated[:limit]

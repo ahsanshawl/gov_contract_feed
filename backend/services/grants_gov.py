@@ -73,12 +73,13 @@ MOCK_GRANTS = [
 ]
 
 
-async def fetch_grants(keywords: str = "", limit: int = 20) -> list[dict]:
+async def fetch_grants(keywords: str = "", limit: int = 15, page: int = 1) -> dict:
+    start_record = (page - 1) * min(limit, 25)
     payload = {
         "keyword": keywords or "defense technology",
         "oppStatuses": "forecasted|posted",
         "rows": min(limit, 25),
-        "startRecordNum": 0,
+        "startRecordNum": start_record,
         "sortBy": "openDate|desc",
         "eligibilities": "",
         "agencyCode": "",
@@ -92,12 +93,20 @@ async def fetch_grants(keywords: str = "", limit: int = 20) -> list[dict]:
             resp.raise_for_status()
             data = resp.json()
             hits = data.get("oppHits", [])
+            total = data.get("oppCount", 0)
+            has_more = (start_record + limit) < total
+
             if not hits:
-                return _mock_grants(keywords, limit)
-            return [_parse(g) for g in hits]
+                mock = _mock_grants(keywords, limit, page)
+                return {"items": mock, "total_on_page": len(mock), "has_more": False}
+
+            items = [_parse(g) for g in hits]
+            return {"items": items, "total_on_page": len(items), "has_more": has_more}
+
     except Exception as e:
         print(f"[Grants.gov] {e} — using mock data")
-        return _mock_grants(keywords, limit)
+        mock = _mock_grants(keywords, limit, page)
+        return {"items": mock, "total_on_page": len(mock), "has_more": page < 5}
 
 
 def _parse(g: dict) -> dict:
@@ -120,7 +129,7 @@ def _parse(g: dict) -> dict:
     }
 
 
-def _mock_grants(keywords: str, limit: int) -> list[dict]:
+def _mock_grants(keywords: str, limit: int, page: int = 1) -> list[dict]:
     items = MOCK_GRANTS.copy()
     if keywords:
         kw = keywords.lower()
@@ -131,4 +140,6 @@ def _mock_grants(keywords: str, limit: int) -> list[dict]:
             scored.append((score, item))
         scored.sort(key=lambda x: x[0], reverse=True)
         items = [i for _, i in scored]
-    return items[:limit]
+    start = ((page - 1) * limit) % len(items)
+    rotated = items[start:] + items[:start]
+    return rotated[:limit]

@@ -343,9 +343,9 @@ export default function App() {
   const [hasMore, setHasMore] = useState(true);
   const [error, setError] = useState("");
   const [sourceCounts, setSourceCounts] = useState<Record<string, number>>({});
-  const [offset, setOffset] = useState(0);
+  const [page, setPage] = useState(1);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-  const PAGE = 15;
+  const PAGE_SIZE = 15;
 
   const loadFeed = useCallback(async (
     reset = true,
@@ -354,24 +354,28 @@ export default function App() {
   ) => {
     const key = overrideKey !== undefined ? overrideKey : openaiKey;
     const sources = overrideSources !== undefined ? overrideSources : activeSources;
-    const currentOffset = reset ? 0 : offset;
+    const currentPage = reset ? 1 : page + 1;
 
     if (reset) { setLoading(true); }
     else { setLoadingMore(true); }
     setError("");
 
     try {
-      const data = await fetchFeed("default", sources.join(","), PAGE, currentOffset, key);
+      const data = await fetchFeed("default", sources.join(","), PAGE_SIZE, currentPage, key);
 
       if (reset) {
         const incomingIds = new Set(data.items.map((i: FeedItem) => i.id));
         setNewItemIds(incomingIds);
         setItems(data.items);
-        setOffset(PAGE);
+        setPage(1);
         setTimeout(() => setNewItemIds(new Set()), 4000);
       } else {
-        setItems(prev => [...prev, ...data.items]);
-        setOffset(o => o + PAGE);
+        setItems(prev => {
+          const existingIds = new Set(prev.map(i => i.id));
+          const fresh = data.items.filter((i: FeedItem) => !existingIds.has(i.id));
+          return [...prev, ...fresh];
+        });
+        setPage(currentPage);
       }
 
       setHasMore(data.has_more);
@@ -384,7 +388,7 @@ export default function App() {
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [activeSources, openaiKey, offset]);
+  }, [activeSources, openaiKey, page]);
 
   useEffect(() => {
     loadFeed(true);

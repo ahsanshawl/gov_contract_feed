@@ -31,8 +31,8 @@ def get_profile_store(user_id: str) -> dict:
 async def get_feed(
     user_id: str = Query("default"),
     sources: str = Query("sam,usaspending,grants"),
-    limit: int = Query(15, le=30),
-    offset: int = Query(0),
+    limit: int = Query(15, le=25),
+    page: int = Query(1, ge=1),   # 1-based page number passed from frontend
     openai_key: str = Query(""),
 ):
     if openai_key:
@@ -41,42 +41,53 @@ async def get_feed(
     keywords = profile.get("keywords", "defense")
     active = [s.strip() for s in sources.split(",")]
 
+    # Pass the page number directly to each source so they fetch a fresh page
     tasks = []
     task_names = []
 
     if "sam" in active:
-        tasks.append(sam_gov.fetch_opportunities(keywords, limit))
+        tasks.append(sam_gov.fetch_opportunities(keywords, limit, page=page))
         task_names.append("sam")
     if "usaspending" in active:
-        tasks.append(usaspending.fetch_awards(keywords, limit))
+        tasks.append(usaspending.fetch_awards(keywords, limit, page=page))
         task_names.append("usaspending")
     if "grants" in active:
-        tasks.append(grants_gov.fetch_grants(keywords, limit))
+        tasks.append(grants_gov.fetch_grants(keywords, limit, page=page))
         task_names.append("grants")
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     all_items = []
     source_counts = {}
+    has_more_flags = []
+
     for name, result in zip(task_names, results):
-        if isinstance(result, list):
+        if isinstance(result, dict):
+            items = result.get("items", [])
+            all_items.extend(items)
+            source_counts[name] = result.get("total_on_page", len(items))
+            has_more_flags.append(result.get("has_more", False))
+        elif isinstance(result, list):
+            # fallback if source returns plain list
             all_items.extend(result)
             source_counts[name] = len(result)
+            has_more_flags.append(len(result) >= limit)
         else:
             print(f"[Feed] source {name} error: {result}")
             source_counts[name] = 0
+            has_more_flags.append(False)
 
-    # AI rank + summarize
+    # AI rank + summarize the current page's items
     ranked = await ai_ranker.rank_and_summarize(all_items, profile)
 
-    # Apply offset for pagination
-    paginated = ranked[offset:offset + limit * len(active)]
-    has_more = len(ranked) > offset + limit * len(active)
+    # Feed has more if ANY source still has more pages
+    has_more = any(has_more_flags)
 
     return {
-        "items": paginated,
+        "items": ranked,
         "total": len(ranked),
         "has_more": has_more,
+        "page": page,
         "source_counts": source_counts,
         "profile": profile,
     }
