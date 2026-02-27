@@ -1,4 +1,4 @@
-# ⬡ GovFeed v2
+# gov contract feed
 
 **Live intelligence feed for government contracts, awards & grants — with AI relevance scoring.**
 
@@ -23,7 +23,6 @@ uvicorn main:app --reload --port 8000
 - `OPENAI_API_KEY` — for AI ranking (optional; falls back to keyword scoring)
 - `SAM_API_KEY` — free from sam.gov/content/dapi (optional; uses demo data without it)
 
-> **No keys? No problem.** All three sources fall back to realistic demo/mock data so you can see the full UI immediately.
 
 ### Frontend
 ```bash
